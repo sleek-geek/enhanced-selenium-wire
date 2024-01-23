@@ -643,35 +643,37 @@ class TCPServer:
             finally:
                 close_socket(connection)
 
-    def serve_forever(self, poll_interval=0.1):
+
+        def serve_forever(self, poll_interval=0.1):
         self.__is_shut_down.clear()
+        poller = select.poll()
+        poller.register(self.socket, select.POLLIN)
+
         try:
             while not self.__shutdown_request:
-                r, w_, e_ = select.select([self.socket], [], [], poll_interval)
-                if self.socket in r:
-                    connection, client_address = self.socket.accept()
-                    t = basethread.BaseThread(
-                        "TCPConnectionHandler (%s: %s:%s -> %s:%s)" % (
-                            self.__class__.__name__,
-                            client_address[0],
-                            client_address[1],
-                            self.address[0],
-                            self.address[1],
-                        ),
-                        target=self.connection_thread,
-                        args=(connection, client_address),
-                    )
-                    t.daemon = True
-                    try:
-                        t.start()
-                    except threading.ThreadError:
-                        self.handle_error(connection, client_address)
-                        connection.close()
+                # poll timeout is in milliseconds, so multiply by 1000
+                events = poller.poll(poll_interval * 1000)
+                for fd, event in events:
+                    if event & select.POLLIN:
+                        connection, client_address = self.socket.accept()
+                        t = threading.Thread(
+                            target=self.connection_thread,
+                            args=(connection, client_address),
+                            name="TCPConnectionHandler"
+                        )
+                        t.daemon = True
+                        try:
+                            t.start()
+                        except threading.ThreadError:
+                            self.handle_error(connection, client_address)
+                            connection.close()
         finally:
+            poller.unregister(self.socket)
             self.__shutdown_request = False
             self.__is_shut_down.set()
-
-    def shutdown(self):
+            
+        
+        def shutdown(self):
         self.__shutdown_request = True
         self.__is_shut_down.wait()
         self.socket.close()
